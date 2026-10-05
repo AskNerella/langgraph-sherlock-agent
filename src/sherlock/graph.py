@@ -1,4 +1,3 @@
-import asyncio
 import json
 import operator
 from typing import Annotated, Literal, TypedDict
@@ -13,15 +12,14 @@ from langgraph.types import Send
 from sherlock.config import Settings
 from sherlock.mcp import Toolsets, connect_toolsets
 from sherlock.models import (
+    Api,
     App,
     AppRun,
-    Endpoint,
-    EndpointAnalysis,
     GithubRecon,
     GitbookRecon,
-    Intelligence,
     LinearResult,
     MuleDiscovery,
+    ReconFindings,
 )
 
 
@@ -38,14 +36,11 @@ class SherlockState(TypedDict, total=False):
 
 
 class AppState(TypedDict, total=False):
-    request: str
     app: App
     mule: MuleDiscovery
     github: GithubRecon
     gitbook: GitbookRecon
-    endpoint: Endpoint
-    intelligence: Intelligence
-    endpoint_reports: Annotated[list[EndpointAnalysis], operator.add]
+    findings: ReconFindings
     linear: LinearResult
     app_runs: list[AppRun]
 
@@ -99,7 +94,17 @@ async def _invoke(agent, message: str):
 
 def _validate(state: SherlockState) -> dict:
     request = state.get("request", "").strip()
-    terms = ("discover", "scan", "document", "analyse", "analyze", "api", "mule", "anypoint", "integration", "repo")
+    terms = (
+        "discover",
+        "scan",
+        "document",
+        "identify",
+        "api",
+        "mule",
+        "anypoint",
+        "integration",
+        "asset",
+    )
     valid = bool(request) and any(term in request.lower() for term in terms)
     return {"valid": valid, "error": "" if valid else "Not an integration discovery task"}
 
@@ -109,22 +114,130 @@ def _after_validation(state: SherlockState) -> Literal["mule_scan", "__end__"]:
 
 
 def _dispatch_apps(state: SherlockState) -> list[Send] | str:
-    apps = state["apps"]
-    if not apps:
+    if not state["apps"]:
         return "summarize"
     return [
         Send(
             "process_app",
             {
-                "request": state["request"],
                 "app": app,
                 "mule": state["mule"],
                 "github": state["github"],
                 "gitbook": state["gitbook"],
             },
         )
-        for app in apps
+        for app in state["apps"]
     ]
+
+
+def _display_name(name: str) -> str:
+    words = name.replace("_", "-").split("-")
+    return " ".join("API" if word.casefold() == "api" else word.capitalize() for word in words)
+
+
+def _matching_api(app: App, apis: list[Api]) -> Api | None:
+    needle = app.name.casefold()
+    return next(
+        (
+            api
+            for api in apis
+            if needle in api.name.casefold()
+            or needle == api.asset_id.casefold()
+            or (api.asset_id and api.asset_id.casefold() in needle)
+        ),
+        apis[0] if len(apis) == 1 else None,
+    )
+
+
+def _build_findings(
+    app: App, mule: MuleDiscovery, github: GithubRecon, gitbook: GitbookRecon
+) -> ReconFindings:
+    api = _matching_api(app, mule.apis)
+    repos = github.repos
+    calls = [call for repo in repos for call in repo.external_api_calls]
+    lines = [
+        f"# {_display_name(app.name)} — Asset Findings",
+        "",
+        "## Anypoint",
+        "",
+        f"- **Application:** `{app.name}`",
+        f"- **Environment:** {app.environment or 'Not found'}",
+        f"- **Status:** {app.status or 'Not found'}",
+        f"- **Deployment URL:** {app.deployment_url or 'Not found'}",
+        f"- **Mule runtime:** {app.mule_runtime or 'Not found'}",
+        f"- **API:** {api.name if api else 'Not found'}",
+        f"- **Version:** {api.version if api and api.version else 'Not found'}",
+        f"- **Asset ID:** `{api.asset_id}`" if api and api.asset_id else "- **Asset ID:** Not found",
+        f"- **API status:** {api.status if api and api.status else 'Not found'}",
+        f"- **API instance ID:** {api.instance_id if api and api.instance_id else 'Not found'}",
+        f"- **Active contracts:** {api.active_contracts if api and api.active_contracts is not None else 'Not found'}",
+        f"- **Runtime engine:** {app.runtime_engine or 'Not found'}",
+        "",
+        "## GitHub",
+        "",
+    ]
+    if repos:
+        lines.extend(
+            [
+                *(f"- **Repository:** [{repo.name}]({repo.url})" for repo in repos),
+                f"- **Repositories:** {len(repos)}",
+                f"- **Mule files:** {sum(repo.mule_files for repo in repos)}",
+                f"- **DataWeave files:** {sum(repo.dataweave_files for repo in repos)}",
+                "",
+                "### External API calls",
+                "",
+                *(
+                    f"- **{call.name}** ({call.api_type}) — `{call.source_file}`"
+                    + (f": {call.evidence}" if call.evidence else "")
+                    for call in calls
+                ),
+                *(
+                    ["No external System API or Process API references were found in `pom.xml` or config YAML files."]
+                    if not calls
+                    else []
+                ),
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "No matching GitHub repository was discovered for this app.",
+                "",
+                "- **Repositories:** 0",
+                "- **Mule files:** 0",
+                "- **DataWeave files:** 0",
+            ]
+        )
+
+    lines.extend(["", "## GitBooks", ""])
+    if gitbook.docs:
+        for doc in gitbook.docs:
+            lines.extend(
+                [
+                    f"- **Title:** {doc.title}",
+                    f"- **URL:** {doc.url or 'Not found'}",
+                    f"- **Space ID:** `{doc.space_id}`" if doc.space_id else "- **Space ID:** Not found",
+                    f"- **Page ID:** `{doc.page_id}`" if doc.page_id else "- **Page ID:** Not found",
+                    f"- **Summary:** {doc.summary or 'Not found'}",
+                ]
+            )
+    else:
+        lines.append("No matching GitBook documentation was discovered for this app.")
+
+    lines.extend(
+        [
+            "",
+            "## Scope",
+            "",
+            "This task documents the discovered Anypoint application and related API, GitHub, "
+            f"and GitBooks findings for the {app.environment or 'requested'} environment.",
+        ]
+    )
+    return ReconFindings(
+        app_name=app.name,
+        report_markdown="\n".join(lines),
+        external_api_calls=calls,
+    )
 
 
 def _catalog(runs: list[AppRun]) -> str:
@@ -132,15 +245,13 @@ def _catalog(runs: list[AppRun]) -> str:
         return "SHERLOCK: No applications were discovered."
     lines = ["# SHERLOCK Asset Catalog", ""]
     for run in runs:
-        intel, linear = run.intelligence, run.linear
         lines.extend(
             [
                 f"## {run.app.name}",
-                f"- Recon: GitHub {run.github.status}; GitBook {run.gitbook.status}"
-                + (f" — {run.gitbook.error}" if run.gitbook.error else ""),
-                f"- Endpoints: {len(intel.endpoints)}; connectors: {len(intel.connectors)}; DataWeave: {intel.total_dataweave_transforms}",
-                f"- Linear: {linear.status} {linear.issue_url or linear.issue_id}"
-                + (f" — {linear.error}" if linear.error else ""),
+                f"- Recon: GitHub {run.github.status}; GitBook {run.gitbook.status}",
+                f"- External API calls: {len(run.findings.external_api_calls)}",
+                f"- Linear: {run.linear.status} {run.linear.issue_url or run.linear.issue_id}"
+                + (f" — {run.linear.error}" if run.linear.error else ""),
                 "",
             ]
         )
@@ -153,32 +264,21 @@ def build_graph(model: BaseChatModel, tools: Toolsets, settings: Settings | None
         model,
         tools.mule,
         MuleDiscovery,
-        """You are Sherlock's Anypoint discovery specialist. Call get_mule_assets using the asset name in the request. If the request is broad or the first result is empty, search api, system, process, and experience. Normalize all findings into the response schema. A tool error becomes status=failed and empty lists; never invent assets.""",
+        """You are Sherlock's Anypoint recon specialist. Call get_mule_assets for the application named in the request. Return the application, environment, deployment status and URL, Mule runtime and engine, plus its API name, version, asset ID, status, instance ID, and active contract count. Do not analyze endpoints or implementation code. A tool error becomes status=failed with empty lists; never invent values.""",
     )
     github_agent = _agent(
         model,
         tools.github,
         GithubRecon,
-        f"""You are Sherlock's GitHub specialist. Search only org:{settings.github_org} for the supplied app. Find matching repositories and read pom.xml only during recon. Return repository URLs and Maven dependencies. Tool failures are recorded and do not stop the workflow.""",
+        f"""You are Sherlock's GitHub recon specialist. Search only org:{settings.github_org} for a repository matching the application name. If no repository matches, return success with an empty repos list. If one matches, inspect only pom.xml and YAML/YML files inside config directories. Do not read Mule XML, DataWeave, Java, or other implementation source. Identify only external calls whose names or configured targets clearly reference a system-api or process-api. Record the source file and short evidence. Repository tree metadata may be used to count Mule XML and DataWeave files, but do not analyze them. Keep tool calls to the minimum needed and never invent findings.""",
     )
     gitbook_agent = _agent(
         model,
         tools.gitbook,
         GitbookRecon,
-        """You are Sherlock's GitBook specialist. Find documentation for the supplied app. First call invoke_operation with operationId=listOrganizationsForAuthenticatedUser and params={} to obtain the organization ID. Then search organization content. If empty, list sites for that organization, inspect site structures, and fetch matching pages. Never call an organization-scoped tool before obtaining the organization ID. Return only supported findings. Tool failures are recorded and do not stop the workflow.""",
+        """You are Sherlock's GitBook recon specialist. First call invoke_operation with operationId=listOrganizationsForAuthenticatedUser and params={} to obtain the organization ID. Search for documentation matching the application name and return title, URL, space ID, page ID, and a short summary. Do not perform implementation analysis. Tool errors are recorded and do not stop the workflow.""",
     )
-    endpoint_agent = _agent(
-        model,
-        tools.github,
-        EndpointAnalysis,
-        """Analyze exactly one integration endpoint. Use the supplied Exchange evidence first and GitHub tools only for files needed to verify this endpoint's implementation. Return a concise Markdown section (maximum 450 words) headed '## Endpoint: <METHOD> <path>' with Purpose, Request, Response, Downstream Calls, DataWeave, Error Handling, and Security subsections. State unknown when evidence is absent; never invent details.""",
-    )
-    fallback_analysis_agent = _agent(
-        model,
-        tools.github,
-        Intelligence,
-        """You are Sherlock's integration intelligence analyst. Use Exchange/API evidence first, then GitHub tools to browse the matched repository from its root and inspect implementation files. Produce a detailed Markdown report with Overview and a separate section for every endpoint. Every endpoint section must cover Purpose, Request, Response, Downstream Calls, DataWeave, Error Handling, and Security. Include Dependencies, Configuration, and GitBook Docs sections. Never claim details unsupported by the supplied evidence; label unknowns explicitly.""",
-    )
+
     async def mule_scan(state: SherlockState) -> dict:
         try:
             result = await _invoke(mule_agent, state["request"])
@@ -188,26 +288,19 @@ def build_graph(model: BaseChatModel, tools: Toolsets, settings: Settings | None
 
     async def github_scan(state: SherlockState) -> dict:
         try:
-            result = await _invoke(
-                github_agent,
-                f"Find the app named in this request and its repository: {state['request']}",
-            )
+            result = await _invoke(github_agent, state["request"])
         except Exception as exc:
             result = GithubRecon(status="failed", error=str(exc))
         return {"github": result}
 
     async def gitbook_scan(state: SherlockState) -> dict:
         try:
-            result = await _invoke(
-                gitbook_agent,
-                f"Find documentation for the app named in this request: {state['request']}",
-            )
+            result = await _invoke(gitbook_agent, state["request"])
         except Exception as exc:
             result = GitbookRecon(status="failed", error=str(exc))
         return {"gitbook": result}
 
     def reconcile(state: SherlockState) -> dict:
-        """Prefer authoritative Mule names, with independent-source fallbacks."""
         apps = state["mule"].apps
         if not apps:
             apps = [App(name=repo.name) for repo in state["github"].repos]
@@ -216,152 +309,33 @@ def build_graph(model: BaseChatModel, tools: Toolsets, settings: Settings | None
         unique = {app.name.casefold(): app for app in apps if app.name.strip()}
         return {"apps": list(unique.values())}
 
-    def dispatch_endpoint_analysis(state: AppState) -> list[Send] | str:
-        if not state["mule"].endpoints:
-            return "analyze_fallback"
-        shared = {
-            "request": state["request"],
-            "app": state["app"],
-            "mule": state["mule"],
-            "github": state["github"],
-            "gitbook": state["gitbook"],
-        }
-        return [
-            Send("analyze_endpoint", {**shared, "endpoint": endpoint})
-            for endpoint in state["mule"].endpoints
-        ]
-
-    async def analyze_endpoint(state: AppState) -> dict:
-        endpoint = state["endpoint"]
-        matching_apis = [
-            api.model_dump()
-            for api in state["mule"].apis
-            if not endpoint.asset_id or api.asset_id == endpoint.asset_id
-        ]
-        payload = json.dumps(
-            {
-                "request": state["request"],
-                "app": state["app"].model_dump(),
-                "endpoint": endpoint.model_dump(),
-                "apis": matching_apis,
-                "github": state["github"].model_dump(),
-                "gitbook": state["gitbook"].model_dump(),
-            },
-            default=str,
-        )
-        error = ""
-        for attempt in range(2):
-            try:
-                return {"endpoint_reports": [await _invoke(endpoint_agent, payload)]}
-            except Exception as exc:
-                error = f"attempt {attempt + 1}: {exc}"
-                if attempt == 0:
-                    await asyncio.sleep(1)
+    def assemble_findings(state: AppState) -> dict:
         return {
-            "endpoint_reports": [
-                EndpointAnalysis(
-                    endpoint=endpoint,
-                    report_markdown=(
-                        f"## Endpoint: {endpoint.method} {endpoint.path}\n\n"
-                        f"Analysis failed: {error}"
-                    ),
-                    status="failed",
-                    error=error,
-                )
-            ]
-        }
-
-    async def analyze_fallback(state: AppState) -> dict:
-        payload = json.dumps(
-            {
-                "request": state["request"],
-                "app": state["app"].model_dump(),
-                "mule": state["mule"].model_dump(),
-                "github": state["github"].model_dump(),
-                "gitbook": state["gitbook"].model_dump(),
-            },
-            default=str,
-        )
-        try:
-            return {"intelligence": await _invoke(fallback_analysis_agent, payload)}
-        except Exception as exc:
-            return {"intelligence": Intelligence(
-                app_name=state["app"].name,
-                full_report_markdown=f"# {state['app'].name}\n\nAnalysis failed: {exc}",
-                status="failed",
-                error=str(exc),
-            )}
-
-    def assemble_analysis(state: AppState) -> dict:
-        order = {
-            (endpoint.method, endpoint.path): index
-            for index, endpoint in enumerate(state["mule"].endpoints)
-        }
-        reports = sorted(
-            state.get("endpoint_reports", []),
-            key=lambda report: order.get(
-                (report.endpoint.method, report.endpoint.path), len(order)
-            ),
-        )
-        dependencies = [
-            dependency
-            for repo in state["github"].repos
-            for dependency in repo.pom_dependencies
-        ]
-        docs = state["gitbook"].docs
-        markdown = [
-            f"# SHERLOCK Intelligence Report: {state['app'].name}",
-            "",
-            "## Overview",
-            f"- Environment: {state['app'].environment or 'unknown'}",
-            f"- Runtime status: {state['app'].status or 'unknown'}",
-            f"- GitHub: {state['github'].repos[0].url if state['github'].repos else 'not found'}",
-            "",
-            *(report.report_markdown for report in reports),
-            "",
-            "## Dependencies",
-            *(f"- `{item}`" for item in dependencies),
-            *( ["- No Maven dependencies found."] if not dependencies else [] ),
-            "",
-            "## Configuration",
-            "See the endpoint evidence above; values not present in source evidence are marked unknown.",
-            "",
-            "## GitBook Docs",
-            *(f"- [{doc.title}]({doc.url})" for doc in docs),
-            *( ["- No matching GitBook documentation found."] if not docs else [] ),
-        ]
-        failed = [report.error for report in reports if report.status == "failed"]
-        return {
-            "intelligence": Intelligence(
-                app_name=state["app"].name,
-                github_repo=state["github"].repos[0].url if state["github"].repos else "",
-                endpoints=[report.endpoint for report in reports],
-                connectors=sorted({item for report in reports for item in report.connectors}),
-                outbound_calls=sorted({item for report in reports for item in report.outbound_calls}),
-                full_report_markdown="\n".join(markdown),
-                total_dataweave_transforms=sum(
-                    report.dataweave_transforms for report in reports
-                ),
-                status="failed" if reports and len(failed) == len(reports) else "success",
-                error="; ".join(failed),
+            "findings": _build_findings(
+                state["app"], state["mule"], state["github"], state["gitbook"]
             )
         }
 
     async def write_linear(state: AppState) -> dict:
         app_name = state["app"].name
         title = f"[KATE] Document: {app_name}"
-        issue_id = ""
-        issue_url = ""
-        team_name = ""
+        issue_id = issue_url = team_name = ""
         try:
-            matches = await _call(
-                tools.linear, "list_issues", {"query": title, "limit": 10}
-            )
+            matches = await _call(tools.linear, "list_issues", {"query": title, "limit": 10})
             issue = next(
                 (item for item in matches.get("issues", []) if item.get("title") == title),
                 None,
             )
-            if issue is None:
+            if issue:
+                issue = await _call(
+                    tools.linear,
+                    "save_issue",
+                    {
+                        "id": issue.get("id") or issue.get("identifier"),
+                        "description": state["findings"].report_markdown,
+                    },
+                )
+            else:
                 teams = await _call(tools.linear, "list_teams", {"limit": 10})
                 team = teams.get("teams", [])[0]
                 team_name = team.get("name", team.get("id", ""))
@@ -371,58 +345,15 @@ def build_graph(model: BaseChatModel, tools: Toolsets, settings: Settings | None
                     {
                         "team": team_name,
                         "title": title,
-                        "description": f"Sherlock intelligence report for {app_name}.",
+                        "description": state["findings"].report_markdown,
                         "priority": 3,
                     },
                 )
-
             issue_id = issue.get("identifier") or issue.get("id", "")
             issue_url = issue.get("url", "")
             issue_team = issue.get("team")
             if not team_name:
-                team_name = (
-                    issue_team.get("name", "")
-                    if isinstance(issue_team, dict)
-                    else issue_team or ""
-                )
-            details = await _call(tools.linear, "get_issue", {"id": issue_id})
-            doc_title = f"SHERLOCK Intelligence Report: {app_name}"
-            documents = details.get("documents", [])
-            document_args = {
-                "title": doc_title,
-                "content": state["intelligence"].full_report_markdown,
-                "issue": issue_id,
-            }
-            if documents:
-                document_args["id"] = documents[0]["id"]
-                document_args.pop("issue")
-            await _call(tools.linear, "save_document", document_args)
-
-            comments = await _call(
-                tools.linear, "list_comments", {"issueId": issue_id, "limit": 50}
-            )
-            existing_comment = next(
-                (
-                    comment
-                    for comment in comments.get("comments", [])
-                    if comment.get("body", "").startswith("SHERLOCK:")
-                ),
-                None,
-            )
-            intel = state["intelligence"]
-            comment_args = {
-                "issueId": issue_id,
-                "body": (
-                    f"SHERLOCK: 🕵️ **{app_name}**\n"
-                    f"Endpoints: {len(intel.endpoints)} | "
-                    f"Connectors: {len(intel.connectors)} | "
-                    f"DataWeave: {intel.total_dataweave_transforms}\n"
-                    "Full intelligence report attached."
-                ),
-            }
-            if existing_comment:
-                comment_args["id"] = existing_comment["id"]
-            await _call(tools.linear, "save_comment", comment_args)
+                team_name = issue_team.get("name", "") if isinstance(issue_team, dict) else issue_team or ""
             result = LinearResult(
                 app_name=app_name,
                 issue_id=issue_id,
@@ -447,24 +378,18 @@ def build_graph(model: BaseChatModel, tools: Toolsets, settings: Settings | None
                     app=state["app"],
                     github=state["github"],
                     gitbook=state["gitbook"],
-                    intelligence=state["intelligence"],
+                    findings=state["findings"],
                     linear=state["linear"],
                 )
             ]
         }
 
     app_builder = StateGraph(AppState, output_schema=AppOutput)
-    app_builder.add_node("analysis_start", lambda _: {})
-    app_builder.add_node("analyze_endpoint", analyze_endpoint)
-    app_builder.add_node("assemble_analysis", assemble_analysis)
-    app_builder.add_node("analyze_fallback", analyze_fallback)
+    app_builder.add_node("assemble_findings", assemble_findings)
     app_builder.add_node("write_linear", write_linear)
     app_builder.add_node("collect", collect)
-    app_builder.add_edge(START, "analysis_start")
-    app_builder.add_conditional_edges("analysis_start", dispatch_endpoint_analysis)
-    app_builder.add_edge("analyze_endpoint", "assemble_analysis")
-    app_builder.add_edge("assemble_analysis", "write_linear")
-    app_builder.add_edge("analyze_fallback", "write_linear")
+    app_builder.add_edge(START, "assemble_findings")
+    app_builder.add_edge("assemble_findings", "write_linear")
     app_builder.add_edge("write_linear", "collect")
     app_builder.add_edge("collect", END)
     app_graph = app_builder.compile()
@@ -481,12 +406,9 @@ def build_graph(model: BaseChatModel, tools: Toolsets, settings: Settings | None
                 final += "\n\nFailures:\n- " + "\n- ".join(failures)
         return {"final": final}
 
-    def recon_start(_: SherlockState) -> dict:
-        return {}
-
     builder = StateGraph(SherlockState)
     builder.add_node("validate", _validate)
-    builder.add_node("recon_start", recon_start)
+    builder.add_node("recon_start", lambda _: {})
     builder.add_node("mule_scan", mule_scan)
     builder.add_node("github_scan", github_scan)
     builder.add_node("gitbook_scan", gitbook_scan)
@@ -508,8 +430,6 @@ def build_graph(model: BaseChatModel, tools: Toolsets, settings: Settings | None
 
 
 async def make_graph():
-    """LangGraph deployment factory. CLI keeps MCP sessions open for lower latency."""
     settings = Settings()
-    model = create_model(settings)
     async with connect_toolsets(settings) as tools:
-        return build_graph(model, tools, settings)
+        return build_graph(create_model(settings), tools, settings)

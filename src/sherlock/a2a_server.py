@@ -33,7 +33,7 @@ def build_agent_card(base_url: str) -> AgentCard:
     endpoint = f"{base_url.rstrip('/')}/a2a/jsonrpc"
     return AgentCard(
         name="Sherlock",
-        description="Recon and intelligence agent for Mule, GitHub, GitBook, and Linear.",
+        description="Integration asset recon agent for Mule, GitHub, GitBook, and Linear.",
         provider=AgentProvider(organization="KATE", url=base_url),
         version="1.0.0",
         capabilities=AgentCapabilities(streaming=True, push_notifications=False),
@@ -43,7 +43,7 @@ def build_agent_card(base_url: str) -> AgentCard:
             AgentSkill(
                 id="integration_asset_discovery",
                 name="Integration Asset Discovery",
-                description="Discover and document an integration app and its APIs.",
+                description="Discover an integration app and record its asset findings.",
                 tags=["mule", "github", "gitbook", "linear", "recon"],
                 examples=[
                     "Identify assets for salesforce-system-api deployed in Sandbox"
@@ -75,7 +75,7 @@ def _status_text(node: str, update: dict[str, Any]) -> str | None:
         return f"Recon complete: {len(update.get('apps', []))} applications"
     if node == "process_app" and update.get("app_runs"):
         run = update["app_runs"][-1]
-        return f"Completed analysis and Linear finalization for {run.app.name}"
+        return f"Completed recon and Linear update for {run.app.name}"
     return None
 
 

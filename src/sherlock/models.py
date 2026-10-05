@@ -7,6 +7,9 @@ class App(BaseModel):
     name: str
     environment: str = ""
     status: str = ""
+    deployment_url: str = ""
+    mule_runtime: str = ""
+    runtime_engine: str = ""
 
 
 class Api(BaseModel):
@@ -14,6 +17,9 @@ class Api(BaseModel):
     version: str = ""
     asset_id: str = ""
     spec: str = ""
+    status: str = ""
+    instance_id: str = ""
+    active_contracts: int | None = None
 
 
 class Endpoint(BaseModel):
@@ -32,11 +38,21 @@ class MuleDiscovery(BaseModel):
     error: str = ""
 
 
+class ExternalApiCall(BaseModel):
+    name: str
+    api_type: Literal["system-api", "process-api"]
+    source_file: str
+    evidence: str = ""
+
+
 class Repo(BaseModel):
     name: str
     url: str = ""
     owner: str = "AskNerella"
-    pom_dependencies: list[dict] = Field(default_factory=list)
+    mule_files: int = 0
+    dataweave_files: int = 0
+    inspected_files: list[str] = Field(default_factory=list)
+    external_api_calls: list[ExternalApiCall] = Field(default_factory=list)
 
 
 class GithubRecon(BaseModel):
@@ -59,28 +75,10 @@ class GitbookRecon(BaseModel):
     error: str = ""
 
 
-class Intelligence(BaseModel):
+class ReconFindings(BaseModel):
     app_name: str
-    github_repo: str = ""
-    runtime_version: str = ""
-    endpoints: list[Endpoint] = Field(default_factory=list)
-    connectors: list[str] = Field(default_factory=list)
-    outbound_calls: list[str] = Field(default_factory=list)
-    exchange_pages: list[str] = Field(default_factory=list)
-    full_report_markdown: str
-    total_dataweave_transforms: int = 0
-    status: Literal["success", "failed"] = "success"
-    error: str = ""
-
-
-class EndpointAnalysis(BaseModel):
-    endpoint: Endpoint
     report_markdown: str
-    connectors: list[str] = Field(default_factory=list)
-    outbound_calls: list[str] = Field(default_factory=list)
-    dataweave_transforms: int = 0
-    status: Literal["success", "failed"] = "success"
-    error: str = ""
+    external_api_calls: list[ExternalApiCall] = Field(default_factory=list)
 
 
 class LinearResult(BaseModel):
@@ -96,5 +94,5 @@ class AppRun(BaseModel):
     app: App
     github: GithubRecon
     gitbook: GitbookRecon
-    intelligence: Intelligence
+    findings: ReconFindings
     linear: LinearResult

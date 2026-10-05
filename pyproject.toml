@@ -1,7 +1,7 @@
 [project]
 name = "langgraph-sherlock"
 version = "0.1.0"
-description = "Parallel LangGraph implementation of the Sherlock integration intelligence agent"
+description = "Parallel LangGraph implementation of the Sherlock integration recon agent"
 requires-python = ">=3.12"
 dependencies = [
   "langchain[mcp]>=1.4.0",

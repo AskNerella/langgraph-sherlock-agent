@@ -71,7 +71,8 @@ async def connect_toolsets(settings: Settings) -> AsyncIterator[Toolsets]:
         yield Toolsets(
             mule=_only(tools["mule"], {"get_mule_assets"}),
             github=_only(
-                tools["github"], {"search_repositories", "get_file_contents"}
+                tools["github"],
+                {"search_repositories", "search_code", "get_file_contents"},
             ),
             gitbook=_only(
                 tools["gitbook"],
@@ -89,11 +90,7 @@ async def connect_toolsets(settings: Settings) -> AsyncIterator[Toolsets]:
                 {
                     "list_teams",
                     "list_issues",
-                    "get_issue",
-                    "list_comments",
                     "save_issue",
-                    "save_document",
-                    "save_comment",
                 },
             ),
         )

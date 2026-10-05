@@ -10,16 +10,7 @@ flowchart LR
     C3 --> D
 
     D --> E{Fan Out by Application}
-
-    E --> F{Fan Out by Endpoint}
-    F --> G1[Endpoint Analysis]
-    F --> G2[Endpoint Analysis]
-    F --> G3[Endpoint Analysis]
-
-    G1 --> H[Merge Intelligence Report]
-    G2 --> H
-    G3 --> H
-
-    H --> I[Update Linear]
+    E --> H[Format Recon Findings]
+    H --> I[Upsert Linear Issue Body]
     I --> J[Final Catalog]
     J --> K[A2A Streamed Result]
