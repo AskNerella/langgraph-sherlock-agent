@@ -1,0 +1,8 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "sherlock": "./src/sherlock/graph.py:make_graph"
+  },
+  "env": ".env"
+}
+

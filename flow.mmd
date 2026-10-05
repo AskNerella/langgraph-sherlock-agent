@@ -1,0 +1,25 @@
+flowchart LR
+    A[A2A Request] --> B[Validate Request]
+
+    B --> C1[Mule Scan]
+    B --> C2[GitHub Scan]
+    B --> C3[GitBook Scan]
+
+    C1 --> D[Reconcile Applications]
+    C2 --> D
+    C3 --> D
+
+    D --> E{Fan Out by Application}
+
+    E --> F{Fan Out by Endpoint}
+    F --> G1[Endpoint Analysis]
+    F --> G2[Endpoint Analysis]
+    F --> G3[Endpoint Analysis]
+
+    G1 --> H[Merge Intelligence Report]
+    G2 --> H
+    G3 --> H
+
+    H --> I[Update Linear]
+    I --> J[Final Catalog]
+    J --> K[A2A Streamed Result]
